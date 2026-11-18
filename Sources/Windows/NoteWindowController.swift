@@ -98,13 +98,43 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         popover.behavior = .semitransient
         popover.delegate = self
 
+        // Register the panel first so the note is raised *before* the panel appears.
+        stylePopover = popover
+        applyLevel()
+
         NSApp.activate()
         window.makeKeyAndOrderFront(nil)
         // Take the cursor out of the text so the Colors panel can't recolour text by accident.
         window.makeFirstResponder(nil)
         let anchor = noteView.header.styleButton
         popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
-        stylePopover = popover
+        keepStylePanelAboveNote()
+        closeStylePanelOnDesktopSwitch()
+    }
+
+    /// The style panel is its own small window. Keep it one layer above the note, so the
+    /// note can never cover it — even if the note's layer changes while the panel is open
+    /// (e.g. macOS finishes activating Stickys a moment later and raises the note).
+    /// Only adjusts the layer, and only while the panel is fully open — never brings a
+    /// closing panel back on screen (that left a frozen copy behind).
+    private func keepStylePanelAboveNote() {
+        guard let window, let popover = stylePopover, popover.isShown,
+              let panelWindow = popover.contentViewController?.view.window, panelWindow.isVisible else { return }
+        let level = NSWindow.Level(rawValue: window.level.rawValue + 1)
+        if panelWindow.level != level { panelWindow.level = level }
+    }
+
+    private var spaceChangeObserver: (any NSObjectProtocol)?
+
+    /// Notes are on every desktop but the panel isn't, so close it when you switch desktops
+    /// rather than leave it behind on the old one.
+    private func closeStylePanelOnDesktopSwitch() {
+        guard spaceChangeObserver == nil else { return }
+        spaceChangeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.activeSpaceDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.stylePopover?.close() }
+        }
     }
 
     private func applyStyle(previous: NoteStyle?) {
@@ -175,9 +205,10 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     /// - Otherwise: behind all other windows, on the desktop.
     func applyLevel() {
         guard let window else { return }
-        let inUse = window.isKeyWindow || stylePopover?.isShown == true || isRaised
+        let inUse = window.isKeyWindow || stylePopover != nil || isRaised
         let level: NSWindow.Level = note.floatsOnTop ? .floating : (inUse ? .normal : NoteWindow.desktopLevel)
         if window.level != level { window.level = level }
+        keepStylePanelAboveNote()
     }
 
     // MARK: - Collapse
@@ -336,8 +367,18 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 }
 
 extension NoteWindowController: NSPopoverDelegate {
+    func popoverDidShow(_ notification: Notification) {
+        keepStylePanelAboveNote()
+    }
+
     func popoverDidClose(_ notification: Notification) {
+        // Make sure the panel's window is really gone, then forget it.
+        (notification.object as? NSPopover)?.contentViewController?.view.window?.orderOut(nil)
         stylePopover = nil
+        if let spaceChangeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(spaceChangeObserver)
+            self.spaceChangeObserver = nil
+        }
         defer { applyLevel() }
         // The Colors panel was being used for the background; close it so it
         // doesn't start colouring text once the cursor is back in the note.
