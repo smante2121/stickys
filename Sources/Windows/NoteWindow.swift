@@ -27,11 +27,17 @@ final class NoteWindow: NSWindow {
         tabbingMode = .disallowed
         minSize = Self.minimumSize
 
-        // Visible on every desktop/Space and alongside full-screen apps.
-        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        // Like part of the desktop: shown in the same place on every desktop (Space),
+        // and left where it is by Mission Control / Show Desktop.
+        collectionBehavior = [.canJoinAllSpaces, .stationary]
+        level = Self.desktopLevel
 
         setFrame(frame, display: false)
     }
+
+    /// Just above the desktop icons and below every app window, so notes sit behind
+    /// everything and can't jump in front when you switch desktops.
+    static let desktopLevel = NSWindow.Level(rawValue: Int(CGWindowLevelForKey(.desktopIconWindow)) + 1)
 
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { true }

@@ -3,6 +3,3 @@ build/
 DerivedData/
 *.xcuserstate
 xcuserdata/
-# Generated from project.yml by XcodeGen
-Stickys.xcodeproj/
-Config/Info.plist

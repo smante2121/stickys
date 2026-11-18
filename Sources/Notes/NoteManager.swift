@@ -11,6 +11,21 @@ final class NoteManager {
 
     static let defaultSize = CGSize(width: 280, height: 260)
 
+    /// Style for new notes ("Use as Default for New Notes"). Kept in UserDefaults.
+    private(set) var defaultStyle: NoteStyle = {
+        guard let data = UserDefaults.standard.data(forKey: NoteManager.defaultStyleKey),
+              let style = try? JSONDecoder().decode(NoteStyle.self, from: data) else { return .default }
+        return style
+    }()
+    private static let defaultStyleKey = "defaultStyle"
+
+    func setDefaultStyle(_ style: NoteStyle) {
+        defaultStyle = style
+        if let data = try? JSONEncoder().encode(style) {
+            UserDefaults.standard.set(data, forKey: Self.defaultStyleKey)
+        }
+    }
+
     // MARK: - Lifecycle
 
     func restoreNotes() {
@@ -28,7 +43,7 @@ final class NoteManager {
 
     @discardableResult
     func createNote(text: NSAttributedString? = nil, focus: Bool = true) -> NoteWindowController {
-        let note = Note(frame: nextNoteFrame())
+        let note = Note(frame: nextNoteFrame(), style: defaultStyle)
         let controller = open(note, text: text ?? NSAttributedString())
         store.saveContent(controller.currentText, for: note.id)
         saveIndexNow()
@@ -40,12 +55,29 @@ final class NoteManager {
         return controller
     }
 
+    /// Brings every note in front of other windows until you switch to another app.
     func showAllNotes() {
         NSApp.activate()
         for controller in controllers {
+            controller.isRaised = true
             controller.window?.orderFrontRegardless()
         }
         controllers.last?.window?.makeKey()
+        observeDeactivation()
+    }
+
+    private var deactivationObserver: (any NSObjectProtocol)?
+
+    /// When you click into another app, raised notes go back behind everything.
+    private func observeDeactivation() {
+        guard deactivationObserver == nil else { return }
+        deactivationObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.controllers.forEach { $0.isRaised = false }
+            }
+        }
     }
 
     func delete(_ controller: NoteWindowController) {

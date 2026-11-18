@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 
 /// Controls one note: keeps its window, view and saved `Note` in sync.
 final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextViewDelegate {
@@ -6,7 +7,7 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     weak var manager: NoteManager?
     private let noteView: NoteContentView
 
-    private var textView: NSTextView { noteView.textView }
+    private var textView: NoteTextView { noteView.textView }
 
     /// A snapshot of the note's current text, for saving.
     var currentText: NSAttributedString {
@@ -26,8 +27,10 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 
         noteView.header.onDoubleClick = { [weak self] in self?.setCollapsed(!(self?.note.isCollapsed ?? false)) }
         noteView.header.closeDot.onPress = { [weak self] in self?.requestDelete() }
-        noteView.header.collapseDot.onPress = { [weak self] in self?.setCollapsed(!(self?.note.isCollapsed ?? false)) }
-        noteView.header.pinDot.onPress = { [weak self] in self?.setFloatsOnTop(!(self?.note.floatsOnTop ?? false)) }
+        noteView.header.styleButton.target = self
+        noteView.header.listButton.target = self
+        noteView.header.listButton.action = #selector(toggleBulletList(_:))
+        noteView.header.styleButton.action = #selector(showStyleEditor(_:))
         noteView.header.menuProvider = { [weak self] in self?.makeNoteMenu() }
 
         applyStyle(previous: nil)
@@ -53,11 +56,55 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 
     // MARK: - Style
 
-    func setBackground(_ color: RGBAColor) {
+    func setStyle(_ style: NoteStyle) {
+        guard style != note.style else { return }
         let previous = note.style
-        note.style.background = color
+        note.style = style
         applyStyle(previous: previous)
         manager?.contentDidChange(self)   // text colours may have changed too
+    }
+
+    private var stylePopover: NSPopover?
+
+    @objc func showStyleEditor(_ sender: Any?) {
+        guard let window else { return }
+        if let stylePopover, stylePopover.isShown {
+            stylePopover.performClose(nil)
+            return
+        }
+
+        let model = StyleEditorModel(style: note.style)
+        model.onChange = { [weak self] style in self?.setStyle(style) }
+
+        // Highlighted text? Then the Text tab's font controls change only that text.
+        let highlighted = textView.selectedRange()
+        if highlighted.length > 0 {
+            model.selection = highlighted
+            model.selectionFont = textView.fontChoice(at: highlighted.location)
+        }
+        model.onSelectionFontChange = { [weak self] old, new, range in
+            self?.textView.applyFont(from: old, to: new, in: range)
+        }
+        model.onUseAsDefault = { [weak self] in
+            guard let self else { return }
+            self.manager?.setDefaultStyle(self.note.style)
+        }
+
+        let host = NSHostingController(rootView: StyleEditorView(model: model))
+        host.sizingOptions = .preferredContentSize
+        let popover = NSPopover()
+        popover.contentViewController = host
+        // Stays open while using the Colors panel; closes on clicks in the note.
+        popover.behavior = .semitransient
+        popover.delegate = self
+
+        NSApp.activate()
+        window.makeKeyAndOrderFront(nil)
+        // Take the cursor out of the text so the Colors panel can't recolour text by accident.
+        window.makeFirstResponder(nil)
+        let anchor = noteView.header.styleButton
+        popover.show(relativeTo: anchor.bounds, of: anchor, preferredEdge: .minY)
+        stylePopover = popover
     }
 
     private func applyStyle(previous: NoteStyle?) {
@@ -65,6 +112,18 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         let textColor = style.resolvedTextColor
 
         noteView.applyStyle(style)
+        if let previous, previous.font != style.font {
+            textView.bulletStyle = style.bullets
+            textView.lineSpacing = style.lineSpacing
+            textView.applyNoteFont(from: previous.font, to: style.font)
+        } else if previous == nil, textView.string.isEmpty {
+            textView.typingAttributes[.font] = FontLibrary.font(for: style.font)
+        }
+        if previous?.bullets != style.bullets || previous?.lineSpacing != style.lineSpacing {
+            textView.bulletStyle = style.bullets
+            textView.lineSpacing = style.lineSpacing
+            textView.applyLayout()
+        }
         window?.appearance = NSAppearance(named: style.isDark ? .darkAqua : .aqua)
         window?.invalidateShadow()
 
@@ -87,7 +146,8 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         var typing = textView.typingAttributes
         if typing[.font] == nil { typing[.font] = NoteContentView.defaultFont }
         let typingColor = (typing[.foregroundColor] as? NSColor).map(RGBAColor.init)
-        if typingColor == nil || previous.map({ typingColor!.isClose(to: $0.resolvedTextColor) }) == true {
+        if previous == nil || typingColor == nil
+            || (previous!.textColor == nil && typingColor!.isClose(to: previous!.resolvedTextColor)) {
             typing[.foregroundColor] = textColor.nsColor
         }
         textView.typingAttributes = typing
@@ -103,8 +163,21 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     }
 
     private func applyFloatsOnTop() {
-        window?.level = note.floatsOnTop ? .floating : .normal
-        noteView.header.pinDot.isOn = note.floatsOnTop
+        applyLevel()
+    }
+
+    /// Set by "Show All Notes": the note stays in front until you switch to another app.
+    var isRaised = false { didSet { applyLevel() } }
+
+    /// Where the note sits in the stack of windows:
+    /// - Float on Top: above everything.
+    /// - While you're using it (typing, style panel open) or after Show All Notes: in front.
+    /// - Otherwise: behind all other windows, on the desktop.
+    func applyLevel() {
+        guard let window else { return }
+        let inUse = window.isKeyWindow || stylePopover?.isShown == true || isRaised
+        let level: NSWindow.Level = note.floatsOnTop ? .floating : (inUse ? .normal : NoteWindow.desktopLevel)
+        if window.level != level { window.level = level }
     }
 
     // MARK: - Collapse
@@ -169,18 +242,17 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 
     // MARK: - Menus
 
-    private func makeNoteMenuItems() -> [NSMenuItem] {
-        let colorMenu = NSMenu()
-        for swatch in NotePalette.allCases {
-            let item = NSMenuItem(title: swatch.name, action: #selector(chooseColor(_:)), keyEquivalent: "")
-            item.target = self
-            item.representedObject = swatch.rawValue
-            item.image = Self.swatchImage(swatch.color)
-            item.state = note.style.background.isClose(to: swatch.color) ? .on : .off
-            colorMenu.addItem(item)
+    @objc func toggleBulletList(_ sender: Any?) {
+        guard !note.isCollapsed, let window else { return }
+        if window.firstResponder !== textView {
+            window.makeFirstResponder(textView)
         }
-        let color = NSMenuItem(title: "Note Color", action: nil, keyEquivalent: "")
-        color.submenu = colorMenu
+        textView.toggleBulletList(sender)
+    }
+
+    private func makeNoteMenuItems() -> [NSMenuItem] {
+        let style = NSMenuItem(title: "Note Style…", action: #selector(showStyleEditor(_:)), keyEquivalent: "")
+        style.target = self
 
         let float = NSMenuItem(title: "Float on Top", action: #selector(toggleFloatOnTop(_:)), keyEquivalent: "")
         float.target = self
@@ -193,30 +265,13 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
         let delete = NSMenuItem(title: "Delete Note…", action: #selector(deleteNote(_:)), keyEquivalent: "")
         delete.target = self
 
-        return [color, float, collapse, .separator(), delete]
+        return [style, float, collapse, .separator(), delete]
     }
 
     private func makeNoteMenu() -> NSMenu {
         let menu = NSMenu()
         makeNoteMenuItems().forEach(menu.addItem)
         return menu
-    }
-
-    private static func swatchImage(_ color: RGBAColor) -> NSImage {
-        NSImage(size: NSSize(width: 14, height: 14), flipped: false) { rect in
-            let path = NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1))
-            color.nsColor.setFill()
-            path.fill()
-            NSColor.black.withAlphaComponent(0.25).setStroke()
-            path.lineWidth = 0.5
-            path.stroke()
-            return true
-        }
-    }
-
-    @objc func chooseColor(_ sender: NSMenuItem) {
-        guard let raw = sender.representedObject as? String, let swatch = NotePalette(rawValue: raw) else { return }
-        setBackground(swatch.color)
     }
 
     @objc func toggleFloatOnTop(_ sender: Any?) { setFloatsOnTop(!note.floatsOnTop) }
@@ -232,7 +287,10 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
 
     /// Adds the note options to the top of the text's right-click menu.
     func textView(_ view: NSTextView, menu: NSMenu, for event: NSEvent, at charIndex: Int) -> NSMenu? {
-        let items = makeNoteMenuItems()
+        let bullets = NSMenuItem(title: "Bulleted List", action: #selector(toggleBulletList(_:)), keyEquivalent: "")
+        bullets.target = self
+        bullets.state = textView.isInBulletList() ? .on : .off
+        let items = [bullets, .separator()] + makeNoteMenuItems()
         for (index, item) in items.enumerated() {
             menu.insertItem(item, at: index)
         }
@@ -255,6 +313,40 @@ final class NoteWindowController: NSWindowController, NSWindowDelegate, NSTextVi
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         requestDelete()
         return false
+    }
+
+    /// Close the style popover when you move on to another app or note
+    /// (but not when you click into the popover itself or the Colors panel).
+    func windowDidBecomeKey(_ notification: Notification) {
+        applyLevel()
+    }
+
+    func windowDidResignKey(_ notification: Notification) {
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if let popover = self.stylePopover, popover.isShown {
+                let key = NSApp.keyWindow
+                let popoverWindow = popover.contentViewController?.view.window
+                if key === self.window || key === popoverWindow || key is NSColorPanel { return }
+                popover.performClose(nil)
+            }
+            self.applyLevel()   // drop back behind other windows
+        }
+    }
+}
+
+extension NoteWindowController: NSPopoverDelegate {
+    func popoverDidClose(_ notification: Notification) {
+        stylePopover = nil
+        defer { applyLevel() }
+        // The Colors panel was being used for the background; close it so it
+        // doesn't start colouring text once the cursor is back in the note.
+        if NSColorPanel.sharedColorPanelExists, NSColorPanel.shared.isVisible {
+            NSColorPanel.shared.orderOut(nil)
+        }
+        if !note.isCollapsed {
+            window?.makeFirstResponder(textView)
+        }
     }
 }
 

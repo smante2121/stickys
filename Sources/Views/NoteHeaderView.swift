@@ -1,41 +1,47 @@
 import AppKit
 
-/// The strip along the top of a note: drag to move, double-click to collapse,
-/// three dots (delete, collapse, float on top) that fade in on hover.
+/// The strip along the top of a note: drag to move, double-click to collapse.
+/// On hover it shows a close dot (left) and a style button (right).
 final class NoteHeaderView: NSView {
     var onDoubleClick: (() -> Void)?
     var menuProvider: (() -> NSMenu?)?
 
-    let closeDot = DotButton(symbol: "xmark", label: "Delete Note")
-    let collapseDot = DotButton(symbol: "minus", label: "Collapse")
-    let pinDot = DotButton(symbol: "pin.fill", label: "Float on Top")
+    let closeDot = CloseDot()
+    let listButton: NSButton
+    let styleButton: NSButton
 
-    private let dots: NSStackView
     private let titleLabel = NSTextField(labelWithString: "")
     private var hoverArea: NSTrackingArea?
 
     init() {
-        dots = NSStackView(views: [closeDot, collapseDot, pinDot])
+        listButton = Self.makeButton(symbol: "list.bullet", label: "Bulleted List (⇧⌘7)")
+        styleButton = Self.makeButton(symbol: "paintpalette", label: "Note Style")
         super.init(frame: .zero)
 
-        dots.orientation = .horizontal
-        dots.spacing = 7
-        dots.alphaValue = 0
+        closeDot.alphaValue = 0
 
         titleLabel.font = .systemFont(ofSize: 12, weight: .semibold)
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.isHidden = true
         titleLabel.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
-        for view in [dots, titleLabel] as [NSView] {
+        for view in [closeDot, listButton, styleButton, titleLabel] as [NSView] {
             view.translatesAutoresizingMaskIntoConstraints = false
             addSubview(view)
         }
         NSLayoutConstraint.activate([
-            dots.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
-            dots.centerYAnchor.constraint(equalTo: centerYAnchor),
-            titleLabel.leadingAnchor.constraint(equalTo: dots.trailingAnchor, constant: 10),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -12),
+            closeDot.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 12),
+            closeDot.centerYAnchor.constraint(equalTo: centerYAnchor),
+            closeDot.widthAnchor.constraint(equalToConstant: CloseDot.diameter),
+            closeDot.heightAnchor.constraint(equalToConstant: CloseDot.diameter),
+
+            styleButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -10),
+            styleButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+            listButton.trailingAnchor.constraint(equalTo: styleButton.leadingAnchor, constant: -6),
+            listButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+
+            titleLabel.leadingAnchor.constraint(equalTo: closeDot.trailingAnchor, constant: 10),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: listButton.leadingAnchor, constant: -8),
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
         ])
     }
@@ -43,14 +49,27 @@ final class NoteHeaderView: NSView {
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
+    private static func makeButton(symbol: String, label: String) -> NSButton {
+        let button = FirstMouseButton(
+            image: NSImage(systemSymbolName: symbol, accessibilityDescription: label)!,
+            target: nil,
+            action: nil
+        )
+        button.isBordered = false
+        button.refusesFirstResponder = true
+        button.symbolConfiguration = .init(pointSize: 12, weight: .medium)
+        button.toolTip = label
+        button.alphaValue = 0
+        return button
+    }
+
     func applyStyle(_ style: NoteStyle) {
         let dark = style.isDark
-        let dotColor = dark ? NSColor.white.withAlphaComponent(0.22) : NSColor.black.withAlphaComponent(0.14)
-        let glyphColor = dark ? NSColor.white.withAlphaComponent(0.8) : NSColor.black.withAlphaComponent(0.6)
-        for dot in [closeDot, collapseDot, pinDot] {
-            dot.dotColor = dotColor
-            dot.glyphColor = glyphColor
-        }
+        closeDot.dotColor = dark ? NSColor.white.withAlphaComponent(0.22) : NSColor.black.withAlphaComponent(0.14)
+        closeDot.glyphColor = dark ? NSColor.white.withAlphaComponent(0.85) : NSColor.black.withAlphaComponent(0.6)
+        let tint = dark ? NSColor.white.withAlphaComponent(0.7) : NSColor.black.withAlphaComponent(0.5)
+        listButton.contentTintColor = tint
+        styleButton.contentTintColor = tint
         titleLabel.textColor = style.resolvedTextColor.nsColor.withAlphaComponent(0.75)
     }
 
@@ -63,7 +82,9 @@ final class NoteHeaderView: NSView {
     func setControlsVisible(_ visible: Bool) {
         NSAnimationContext.runAnimationGroup { context in
             context.duration = 0.18
-            dots.animator().alphaValue = visible ? 1 : 0
+            closeDot.animator().alphaValue = visible ? 1 : 0
+            listButton.animator().alphaValue = visible ? 1 : 0
+            styleButton.animator().alphaValue = visible ? 1 : 0
         }
     }
 
@@ -81,7 +102,7 @@ final class NoteHeaderView: NSView {
 
     override func menu(for event: NSEvent) -> NSMenu? { menuProvider?() }
 
-    // Show the symbols inside the dots while hovering the header (like traffic lights).
+    // Show the × inside the close dot while hovering the header (like traffic lights).
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let hoverArea { removeTrackingArea(hoverArea) }
@@ -95,53 +116,49 @@ final class NoteHeaderView: NSView {
         hoverArea = area
     }
 
-    override func mouseEntered(with event: NSEvent) { setGlyphsVisible(true) }
-    override func mouseExited(with event: NSEvent) { setGlyphsVisible(false) }
-
-    private func setGlyphsVisible(_ visible: Bool) {
-        for dot in [closeDot, collapseDot, pinDot] { dot.showsGlyph = visible }
-    }
+    override func mouseEntered(with event: NSEvent) { closeDot.showsGlyph = true }
+    override func mouseExited(with event: NSEvent) { closeDot.showsGlyph = false }
 }
 
-/// A small round button drawn as a dot, showing its symbol on hover.
-final class DotButton: NSView {
+/// Clicks work on the first click, even when the note isn't the active window.
+final class FirstMouseButton: NSButton {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
+/// The round close button. The × is drawn as two strokes so it sits exactly centred.
+final class CloseDot: NSView {
     static let diameter: CGFloat = 12
 
     var onPress: (() -> Void)?
     var dotColor = NSColor.black.withAlphaComponent(0.14) { didSet { needsDisplay = true } }
     var glyphColor = NSColor.black.withAlphaComponent(0.6) { didSet { needsDisplay = true } }
     var showsGlyph = false { didSet { needsDisplay = true } }
-    /// For toggles (Float on Top): an "on" dot is darker and always shows its symbol.
-    var isOn = false { didSet { needsDisplay = true } }
 
-    private let symbol: String
-
-    init(symbol: String, label: String) {
-        self.symbol = symbol
+    init() {
         super.init(frame: NSRect(x: 0, y: 0, width: Self.diameter, height: Self.diameter))
-        toolTip = label
+        toolTip = "Delete Note"
         setAccessibilityRole(.button)
-        setAccessibilityLabel(label)
+        setAccessibilityLabel("Delete Note")
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    override var intrinsicContentSize: NSSize { NSSize(width: Self.diameter, height: Self.diameter) }
-
     override func draw(_ dirtyRect: NSRect) {
-        let fill = isOn ? dotColor.withAlphaComponent(min(dotColor.alphaComponent * 2.4, 1)) : dotColor
-        fill.setFill()
+        dotColor.setFill()
         NSBezierPath(ovalIn: bounds.insetBy(dx: 0.5, dy: 0.5)).fill()
 
-        guard showsGlyph || isOn else { return }
-        let config = NSImage.SymbolConfiguration(pointSize: 7, weight: .black)
-            .applying(.init(paletteColors: [glyphColor]))
-        guard let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
-            .withSymbolConfiguration(config) else { return }
-        let size = image.size
-        image.draw(in: NSRect(x: bounds.midX - size.width / 2, y: bounds.midY - size.height / 2,
-                              width: size.width, height: size.height))
+        guard showsGlyph else { return }
+        let arm: CGFloat = 2.5   // half the length of each stroke
+        let cross = NSBezierPath()
+        cross.move(to: NSPoint(x: bounds.midX - arm, y: bounds.midY - arm))
+        cross.line(to: NSPoint(x: bounds.midX + arm, y: bounds.midY + arm))
+        cross.move(to: NSPoint(x: bounds.midX - arm, y: bounds.midY + arm))
+        cross.line(to: NSPoint(x: bounds.midX + arm, y: bounds.midY - arm))
+        cross.lineWidth = 1.4
+        cross.lineCapStyle = .round
+        glyphColor.setStroke()
+        cross.stroke()
     }
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }

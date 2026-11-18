@@ -11,11 +11,11 @@ mode="${1:-build}"
 config="Debug"
 [[ "$mode" == "install" ]] && config="Release"
 
-xcodegen generate --quiet
 xcodebuild \
   -project Stickys.xcodeproj \
   -scheme Stickys \
   -configuration "$config" \
+  -destination "platform=macOS,arch=$(uname -m)" \
   -derivedDataPath build/DerivedData \
   -quiet \
   build

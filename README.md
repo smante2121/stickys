@@ -1,17 +1,17 @@
 # Stickys
 
-A cleaner, more customizable take on macOS Stickies. Lives in the menu bar (no Dock icon).
+i love the mac native stickies app but i wanted to more customizations and a liquid glass option and other features like bulleted lists. it also doesnt show an icon in the doc
 
 ## Build & run
 
-Requires Xcode 26+ and [XcodeGen](https://github.com/yonaskolb/XcodeGen) (`brew install xcodegen`).
+Requires Xcode 26+.
 
 ```sh
 scripts/build.sh run        # build (Debug) and launch
 scripts/build.sh install    # build (Release) into ~/Applications and launch
 ```
 
-Or run `xcodegen generate`, open `Stickys.xcodeproj` in Xcode, and press ⌘R.
+Or open `Stickys.xcodeproj` in Xcode and press ⌘R. New `.swift` files added under `Sources/` are picked up automatically.
 
 ## Where things live
 

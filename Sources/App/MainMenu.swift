@@ -55,6 +55,8 @@ enum MainMenu {
             item("Copy Style", #selector(NSTextView.copyFont(_:)), "c", [.command, .option]),
             item("Paste Style", #selector(NSTextView.pasteFont(_:)), "v", [.command, .option]),
             .separator(),
+            item("Bulleted List", #selector(NoteTextView.toggleBulletList(_:)), "7", [.command, .shift]),
+            .separator(),
             item("Align Left", #selector(NSText.alignLeft(_:)), "{"),
             item("Center", #selector(NSText.alignCenter(_:)), "|"),
             item("Align Right", #selector(NSText.alignRight(_:)), "}"),
